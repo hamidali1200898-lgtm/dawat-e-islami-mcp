@@ -1,0 +1,16 @@
+{
+  "name": "dawat-e-islami-mcp",
+  "version": "1.0.0",
+  "description": "Dawat-e-Islami research MCP for official books, Islamic Portal, Faizan-e-Madina, Quran, Kanz-ul-Iman and Sirat-ul-Jinan.",
+  "type": "module",
+  "scripts": {
+    "start": "wrangler dev"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "latest",
+    "hono": "latest"
+  },
+  "devDependencies": {
+    "wrangler": "latest"
+  }
+}
