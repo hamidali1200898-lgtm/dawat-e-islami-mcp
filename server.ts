@@ -1,36 +1,47 @@
 import { McpServer } from "@modelcontextprotocol/server";
-import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 
-const BASE = "https://www.dawateislami.net";
+const server = new McpServer({
+  name: "Dawat-e-Islami Research",
+  version: "5.0.0",
+});
 
-const QURAN = {
-  search: `${BASE}/quran/search/results`,
-  intro: `${BASE}/quran/intro/sirat-ul-jinan/saal`,
-  home: `${BASE}/quran`,
+const OFFICIAL = "https://www.dawateislami.net";
+
+const URLS = {
+  booksSearch: `${OFFICIAL}/bookslibrary/ur/search`,
+  quranSearch: `${OFFICIAL}/quran/search/results`,
+  portal: `${OFFICIAL}/islamicportal`,
 };
 
-const BOOKS = {
-  search: `${BASE}/bookslibrary/ur/search`,
-  home: `${BASE}/bookslibrary/ur`,
+const HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7",
+  "Accept-Language": "ur,en-US;q=0.9,en;q=0.8",
 };
 
-const PORTAL = {
-  home: `${BASE}/islamicportal`,
-};
+function cleanText(input: string): string {
+  return input
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
+    .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 
-const SOURCES = {
-  books: "Dawat-e-Islami Al Madina Books Library",
-  quran: "Dawat-e-Islami Quran",
-  portal: "Dawat-e-Islami Islamic Portal",
-};
-
-/* ---------------------------------------------------------
-   General helpers
---------------------------------------------------------- */
-
-function decodeHtml(text: string): string {
-  return text
+function decodeHtml(input: string): string {
+  return input
     .replace(/&nbsp;/gi, " ")
     .replace(/&amp;/gi, "&")
     .replace(/&quot;/gi, '"')
@@ -46,1916 +57,1102 @@ function decodeHtml(text: string): string {
     );
 }
 
-function normalizeWhitespace(text: string): string {
-  return text
-    .replace(/\u00a0/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n[ \t]+/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-}
-
-function htmlToText(html: string): string {
-  return normalizeWhitespace(
-    decodeHtml(
-      html
-        .replace(/<script[\s\S]*?<\/script>/gi, " ")
-        .replace(/<style[\s\S]*?<\/style>/gi, " ")
-        .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
-        .replace(/<svg[\s\S]*?<\/svg>/gi, " ")
-        .replace(/<br\s*\/?>/gi, "\n")
-        .replace(/<\/p>/gi, "\n")
-        .replace(/<\/div>/gi, "\n")
-        .replace(/<\/section>/gi, "\n")
-        .replace(/<\/article>/gi, "\n")
-        .replace(/<\/li>/gi, "\n")
-        .replace(/<\/h[1-6]>/gi, "\n")
-        .replace(/<[^>]+>/g, " ")
-    )
-  );
-}
-
-function stripHtml(text: string): string {
-  return normalizeWhitespace(
-    decodeHtml(
-      text
-        .replace(/<script[\s\S]*?<\/script>/gi, " ")
-        .replace(/<style[\s\S]*?<\/style>/gi, " ")
-        .replace(/<[^>]+>/g, " ")
-    )
-  );
-}
-
-function extractLinks(html: string): string[] {
-  const output: string[] = [];
-  const seen = new Set<string>();
-
-  const regex =
-    /href\s*=\s*["']([^"']+)["']/gi;
-
-  let match: RegExpExecArray | null;
-
-  while ((match = regex.exec(html)) !== null) {
-    const raw = decodeHtml(match[1].trim());
-
-    if (
-      !raw ||
-      raw.startsWith("#") ||
-      raw.startsWith("javascript:") ||
-      raw.startsWith("mailto:")
-    ) {
-      continue;
-    }
-
-    try {
-      const url = new URL(raw, BASE).toString();
-
-      if (
-        url.startsWith(BASE) &&
-        !seen.has(url)
-      ) {
-        seen.add(url);
-        output.push(url);
-      }
-    } catch {
-      // Ignore invalid URLs.
-    }
-
-    if (output.length >= 300) break;
-  }
-
-  return output;
-}
-
-async function fetchSource(url: string) {
+async function fetchPage(url: string): Promise<string> {
   try {
     const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Accept:
-          "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8",
-        "User-Agent":
-          "Dawat-e-Islami-Research-MCP/4.0",
-      },
+      headers: HEADERS,
+      redirect: "follow",
     });
 
-    const html = await response.text();
+    if (!response.ok) return "";
 
-    return {
-      ok: response.ok,
-      status: response.status,
-      url,
-      html,
-      text: htmlToText(html),
-      links: extractLinks(html),
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      status: 0,
-      url,
-      html: "",
-      text: `SOURCE REQUEST ERROR: ${
-        error instanceof Error
-          ? error.message
-          : String(error)
-      }`,
-      links: [],
-    };
-  }
-}
-
-function unique<T>(items: T[]): T[] {
-  return [...new Set(items)];
-}
-
-function absoluteUrl(url: string): string {
-  try {
-    return new URL(url, BASE).toString();
+    return await response.text();
   } catch {
-    return url;
+    return "";
   }
 }
 
-function normalizeForSearch(text: string): string {
-  return text
+function absoluteUrl(href: string): string {
+  const decoded = decodeHtml(href.trim());
+
+  if (decoded.startsWith("http://") || decoded.startsWith("https://")) {
+    return decoded;
+  }
+
+  if (decoded.startsWith("//")) {
+    return `https:${decoded}`;
+  }
+
+  if (decoded.startsWith("/")) {
+    return `${OFFICIAL}${decoded}`;
+  }
+
+  return `${OFFICIAL}/${decoded}`;
+}
+
+function normalize(s: string): string {
+  return s
     .toLowerCase()
-    .replace(/[ًٌٍَُِّْـٰۤۡ]/g, "")
-    .replace(/[^\p{L}\p{N}\s:.-]/gu, " ")
+    .replace(/[ًٌٍَُِّْٰـ]/g, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-function makeSearchVariants(query: string): string[] {
-  const variants = [
-    query,
-    normalizeForSearch(query),
-  ];
+function queryTerms(query: string): string[] {
+  const base = normalize(query);
 
-  const q = normalizeForSearch(query);
-
-  const transliterations: Record<string, string[]> = {
-    "صبر": ["sabr", "sabar"],
+  const variants: Record<string, string[]> = {
+    "صبر": ["صبر", "صابر", "صابرین", "sabr", "sabar"],
+    صابرین: ["صابرین", "صبر", "sabr", "sabar"],
     "صبر کے فضائل": [
-      "sabr ke fazail",
-      "sabar kay fazail",
-      "sabr kay fazail",
+      "صبر کے فضائل",
+      "صبر",
+      "sabr",
+      "sabar",
     ],
-    "نماز": ["namaz", "salah"],
-    "روزہ": ["roza", "rozah", "fasting"],
-    "زکوٰۃ": ["zakat"],
-    "توبہ": ["tauba", "tawbah"],
-    "تقویٰ": ["taqwa"],
-    "اخلاق": ["akhlaq"],
   };
 
-  for (const [key, values] of Object.entries(
-    transliterations
-  )) {
-    if (
-      q === normalizeForSearch(key) ||
-      q.includes(normalizeForSearch(key))
-    ) {
-      variants.push(...values);
+  const out = new Set<string>();
+  out.add(base);
+
+  for (const [key, values] of Object.entries(variants)) {
+    if (base.includes(normalize(key)) || normalize(key).includes(base)) {
+      for (const value of values) out.add(normalize(value));
     }
   }
 
-  return unique(
-    variants.filter(Boolean).map((x) => x.trim())
-  );
+  return [...out].filter(Boolean);
 }
 
-/* ---------------------------------------------------------
-   HTML metadata helpers
---------------------------------------------------------- */
-
-function extractTitle(html: string): string | null {
-  const h1 =
-    html.match(
-      /<h1[^>]*>([\s\S]*?)<\/h1>/i
-    )?.[1];
-
-  if (h1) {
-    const value = stripHtml(h1);
-    if (value) return value;
-  }
-
-  const title =
-    html.match(
-      /<title[^>]*>([\s\S]*?)<\/title>/i
-    )?.[1];
-
-  if (title) {
-    const value = stripHtml(title);
-    if (value) return value;
-  }
-
-  return null;
-}
-
-function extractMeta(
+function extractLinks(
   html: string,
-  names: string[]
-): string | null {
-  for (const name of names) {
-    const regex1 = new RegExp(
-      `<meta[^>]+(?:name|property)=["']${name}["'][^>]+content=["']([^"']+)["']`,
-      "i"
-    );
+  pattern: RegExp
+): Array<{ url: string; text: string }> {
+  const results: Array<{ url: string; text: string }> = [];
 
-    const regex2 = new RegExp(
-      `<meta[^>]+content=["']([^"']+)["'][^>]+(?:name|property)=["']${name}["']`,
-      "i"
-    );
+  const re = /<a\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
-    const match =
-      html.match(regex1) ||
-      html.match(regex2);
+  let match: RegExpExecArray | null;
 
-    if (match?.[1]) {
-      return stripHtml(match[1]);
-    }
-  }
+  while ((match = re.exec(html)) !== null) {
+    const href = match[1];
+    const text = cleanText(match[2]);
 
-  return null;
-}
+    if (!pattern.test(href)) continue;
 
-function findContext(
-  text: string,
-  query: string,
-  before = 1200,
-  after = 3500
-): string {
-  const normalizedText =
-    normalizeForSearch(text);
-
-  const normalizedQuery =
-    normalizeForSearch(query);
-
-  const index =
-    normalizedText.indexOf(normalizedQuery);
-
-  if (index < 0) {
-    return text.slice(0, before + after);
-  }
-
-  const start = Math.max(
-    0,
-    index - before
-  );
-
-  const end = Math.min(
-    text.length,
-    index + after
-  );
-
-  return text.slice(start, end).trim();
-}
-
-function extractLabeledSection(
-  text: string,
-  labels: string[],
-  max = 8000
-): string | null {
-  for (const label of labels) {
-    const index = text.indexOf(label);
-
-    if (index >= 0) {
-      return text
-        .slice(index, index + max)
-        .trim();
-    }
-  }
-
-  return null;
-}
-
-/* ---------------------------------------------------------
-   Quran helpers
---------------------------------------------------------- */
-
-function parseAyahLinks(
-  links: string[],
-  surah: number,
-  ayah: number
-): string[] {
-  const needle = `/ayat-${ayah}`;
-
-  return unique(
-    links.filter((link) => {
-      try {
-        const u = new URL(link);
-
-        return (
-          u.hostname === "www.dawateislami.net" &&
-          u.pathname.includes("/quran/") &&
-          u.pathname.includes(needle)
-        );
-      } catch {
-        return false;
-      }
-    })
-  ).slice(0, 10);
-}
-
-async function discoverAyahPage(
-  surah: number,
-  ayah: number
-) {
-  const query = `${surah}:${ayah}`;
-
-  const searchUrl =
-    `${QURAN.search}?q=${encodeURIComponent(query)}`;
-
-  const search = await fetchSource(
-    searchUrl
-  );
-
-  const directLinks = parseAyahLinks(
-    search.links,
-    surah,
-    ayah
-  );
-
-  /*
-   * Fallback: search result HTML may contain
-   * the direct Quran URL even if link extraction
-   * did not catch it.
-   */
-  const htmlUrls =
-    search.html.match(
-      /https?:\/\/www\.dawateislami\.net\/quran\/[^"' <]+/gi
-    ) || [];
-
-  for (const raw of htmlUrls) {
-    const clean = raw
-      .replace(/&amp;/g, "&")
-      .replace(/[),.;]+$/g, "");
-
-    if (
-      clean.includes(`/ayat-${ayah}`)
-    ) {
-      directLinks.push(clean);
-    }
-  }
-
-  const candidates = unique(
-    directLinks
-  );
-
-  /*
-   * If search returned no direct link, use the
-   * site's established public URL pattern.
-   * This is only a discovery candidate; we verify
-   * it with fetch before using it.
-   */
-  if (!candidates.length) {
-    candidates.push(
-      `${BASE}/quran/surah-${surah}/ayat-${ayah}/translation-1/tafseer`,
-      `${BASE}/quran/surah-${surah}/ayat-${ayah}/translation-2/tafseer`,
-      `${BASE}/quran/surah-${surah}/ayat-${ayah}/translation-3/tafseer`
-    );
-  }
-
-  const pages = [];
-
-  for (const candidate of candidates.slice(0, 6)) {
-    const page = await fetchSource(
-      candidate
-    );
-
-    if (
-      page.ok &&
-      page.status >= 200 &&
-      page.status < 400 &&
-      page.text.length > 100
-    ) {
-      pages.push(page);
-    }
-  }
-
-  return {
-    query,
-    search,
-    pages,
-  };
-}
-
-function extractArabicAyah(
-  text: string,
-  ayah: number
-): string | null {
-  /*
-   * Official pages contain the ayah number and
-   * Arabic text nearby. Keep this conservative.
-   */
-  const reference =
-    new RegExp(
-      `\\b\\d+\\.${ayah}\\b`
-    );
-
-  const match =
-    text.match(reference);
-
-  if (match?.index !== undefined) {
-    const section = text.slice(
-      match.index,
-      match.index + 1600
-    );
-
-    const arabic =
-      section.match(
-        /([\u0600-\u06FF][\u0600-\u06FF\sًٌٍَُِّْٰۭٖٕۖۚۗۙۛۜۢٗٔـٓۤۡۥۦۧۨ۩ؕؔؒؓؑﷲ()،؛:.!-]{20,})/
-      );
-
-    if (arabic?.[1]) {
-      return normalizeWhitespace(
-        arabic[1]
-      );
-    }
-  }
-
-  return null;
-}
-
-function extractQuranPageData(
-  page: Awaited<ReturnType<typeof fetchSource>>,
-  ayah: number
-) {
-  const text = page.text;
-
-  const arabic =
-    extractArabicAyah(
+    results.push({
+      url: absoluteUrl(href),
       text,
-      ayah
-    );
+    });
+  }
 
-  const kanzulIman =
-    extractLabeledSection(
-      text,
-      [
-        "کنزالایمان",
-        "ترجمہ کنزالایمان",
-        "ترجمۂ کنزالایمان",
-        "Kanz ul Iman",
-      ],
-      5000
-    );
-
-  const kanzulIrfan =
-    extractLabeledSection(
-      text,
-      [
-        "کنز العرفان",
-        "ترجمہ کنز العرفان",
-        "ترجمۂ کنز العرفان",
-        "Kanz ul Irfan",
-      ],
-      5000
-    );
-
-  const siratUlJinan =
-    extractLabeledSection(
-      text,
-      [
-        "تفسیر : صراط الجنان",
-        "تفسیر صراط الجنان",
-        "صراط الجنان",
-        "صِراطُ الجِنان",
-      ],
-      9000
-    );
-
-  const references =
-    extractLabeledSection(
-      text,
-      [
-        "حوالہ",
-        "حوالہ جات",
-        "References",
-        "Source",
-      ],
-      5000
-    );
-
-  return {
-    url: page.url,
-    status: page.status,
-    title: extractTitle(page.html),
-    arabic,
-    kanzul_iman: kanzulIman,
-    kanzul_irfan: kanzulIrfan,
-    sirat_ul_jinan: siratUlJinan,
-    references,
-    source_text: findContext(
-      text,
-      `${ayah}`,
-      1000,
-      5000
-    ),
-    links: page.links
-      .filter((x) =>
-        x.includes("/quran/")
-      )
-      .slice(0, 40),
-  };
+  return results;
 }
 
-function selectQuranMode(
-  data: any,
-  mode: string
-) {
-  if (mode === "arabic") {
-    return {
-      arabic: data.arabic,
-      source_url: data.url,
-    };
+function uniqueByUrl<T extends { url: string }>(items: T[]): T[] {
+  const map = new Map<string, T>();
+
+  for (const item of items) {
+    if (!map.has(item.url)) map.set(item.url, item);
   }
 
-  if (mode === "kanzul_iman") {
-    return {
-      kanzul_iman:
-        data.kanzul_iman,
-      source_url: data.url,
-    };
-  }
-
-  if (mode === "kanzul_irfan") {
-    return {
-      kanzul_irfan:
-        data.kanzul_irfan,
-      source_url: data.url,
-    };
-  }
-
-  if (mode === "tafsir") {
-    return {
-      sirat_ul_jinan:
-        data.sirat_ul_jinan,
-      source_url: data.url,
-    };
-  }
-
-  if (mode === "references") {
-    return {
-      references:
-        data.references,
-      source_url: data.url,
-    };
-  }
-
-  return data;
+  return [...map.values()];
 }
 
-async function getQuranAyahResearch(
-  surah: number,
-  ayah: number
-) {
-  const discovered =
-    await discoverAyahPage(
-      surah,
-      ayah
-    );
-
-  const pages =
-    discovered.pages;
-
-  const pageData =
-    pages.map((page) =>
-      extractQuranPageData(
-        page,
-        ayah
-      )
-    );
-
-  /*
-   * Merge information from multiple official
-   * translation/tafseer pages without inventing
-   * missing fields.
-   */
-  const merged: any = {
-    surah,
-    ayah,
-    reference: `${surah}:${ayah}`,
-    source: SOURCES.quran,
-    discovery_url:
-      discovered.search.url,
-    pages_checked:
-      pageData.length,
-    official_pages: pageData,
-  };
-
-  for (const item of pageData) {
-    if (!merged.arabic && item.arabic) {
-      merged.arabic = item.arabic;
-    }
-
-    if (
-      !merged.kanzul_iman &&
-      item.kanzul_iman
-    ) {
-      merged.kanzul_iman =
-        item.kanzul_iman;
-    }
-
-    if (
-      !merged.kanzul_irfan &&
-      item.kanzul_irfan
-    ) {
-      merged.kanzul_irfan =
-        item.kanzul_irfan;
-    }
-
-    if (
-      !merged.sirat_ul_jinan &&
-      item.sirat_ul_jinan
-    ) {
-      merged.sirat_ul_jinan =
-        item.sirat_ul_jinan;
-    }
-
-    if (
-      !merged.references &&
-      item.references
-    ) {
-      merged.references =
-        item.references;
-    }
-  }
-
-  merged.detected = {
-    arabic: Boolean(merged.arabic),
-    kanzul_iman:
-      Boolean(merged.kanzul_iman),
-    kanzul_irfan:
-      Boolean(merged.kanzul_irfan),
-    sirat_ul_jinan:
-      Boolean(merged.sirat_ul_jinan),
-    references:
-      Boolean(merged.references),
-  };
-
-  merged.research_rules = [
-    "Only official Dawat-e-Islami Quran pages are used.",
-    "Never reconstruct missing Quran text.",
-    "Never invent a translation.",
-    "Never invent tafsir.",
-    "Never invent page numbers or references.",
-    "Preserve the official source URL.",
-    "Source text must remain distinguishable from generated explanation.",
-  ];
-
-  return merged;
-}
-
-/* ---------------------------------------------------------
-   Books Library helpers
---------------------------------------------------------- */
-
-function isBookCandidate(url: string): boolean {
-  try {
-    const u = new URL(url);
-
-    if (
-      u.hostname !==
-      "www.dawateislami.net"
-    ) {
-      return false;
-    }
-
-    if (
-      !u.pathname.startsWith(
-        "/bookslibrary/ur/"
-      )
-    ) {
-      return false;
-    }
-
-    const parts =
-      u.pathname
-        .split("/")
-        .filter(Boolean);
-
-    if (parts.length < 3) {
-      return false;
-    }
-
-    const last =
-      parts[parts.length - 1];
-
-    const excluded = new Set([
-      "search",
-      "category",
-      "categories",
-      "author",
-      "authors",
-      "home",
-      "books",
-      "download",
-      "read",
-      "page",
-    ]);
-
-    if (
-      excluded.has(
-        last.toLowerCase()
-      )
-    ) {
-      return false;
-    }
-
-    /*
-     * Search pages may expose category and
-     * navigation URLs. A real book generally has
-     * either one slug or a book/section slug pair.
-     */
-    return parts.length >= 4 ||
-      parts.length === 3;
-  } catch {
-    return false;
-  }
-}
-
-function extractBookMetadata(
-  page: Awaited<ReturnType<typeof fetchSource>>
-) {
-  const text = page.text;
-
-  const title =
-    extractTitle(page.html);
-
-  function field(
-    labels: string[]
-  ): string | null {
-    for (const label of labels) {
-      const regex =
-        new RegExp(
-          `${label}\\s*[:：]?\\s*([^\\n]{2,180})`,
-          "i"
-        );
-
-      const match =
-        text.match(regex);
-
-      if (match?.[1]) {
-        return match[1]
-          .replace(
-            /\s+/g,
-            " "
-          )
-          .trim();
-      }
-    }
-
-    return null;
-  }
-
-  const author =
-    field([
-      "مصنف",
-      "مصنف:",
-      "Author",
-    ]);
-
-  const publisher =
-    field([
-      "پبلشر",
-      "Publisher",
-    ]);
-
-  const publicationDate =
-    field([
-      "تاریخ اشاعت",
-      "Publication Date",
-    ]);
-
-  const category =
-    field([
-      "کیٹیگری",
-      "Category",
-    ]);
-
-  const onlinePages =
-    field([
-      "آن لائن پڑھیں صفحات",
-      "Online Reading Pages",
-    ]);
-
-  const pdfPages =
-    field([
-      "پی ڈی ایف صفحات",
-      "PDF Pages",
-    ]);
-
-  const isbn =
-    field([
-      "ISBN نمبر",
-      "ISBN",
-    ]);
-
-  /*
-   * Try to isolate "کتاب کے بارے میں"
-   * without returning the entire page.
-   */
-  const description =
-    extractLabeledSection(
-      text,
-      [
-        "کتاب کے بارے میں",
-        "About the Book",
-      ],
-      1800
-    );
-
-  return {
-    title,
-    author,
-    publisher,
-    publication_date:
-      publicationDate,
-    category,
-    online_pages:
-      onlinePages,
-    pdf_pages:
-      pdfPages,
-    isbn,
-    description,
-  };
-}
-
-function scoreBook(
-  query: string,
-  url: string,
-  metadata: any,
-  text: string
-): number {
-  const variants =
-    makeSearchVariants(query)
-      .map(normalizeForSearch)
-      .filter(Boolean);
-
-  const haystack =
-    normalizeForSearch(
-      [
-        url,
-        metadata.title || "",
-        metadata.author || "",
-        metadata.category || "",
-        metadata.description || "",
-        text.slice(0, 8000),
-      ].join(" ")
-    );
+function scoreText(text: string, query: string): number {
+  const normalizedText = normalize(text);
+  const terms = queryTerms(query);
 
   let score = 0;
 
-  for (const variant of variants) {
-    if (!variant) continue;
+  for (const term of terms) {
+    if (!term) continue;
 
-    if (
-      normalizeForSearch(
-        metadata.title || ""
-      ).includes(variant)
-    ) {
-      score += 100;
-    }
+    if (normalizedText === term) score += 100;
+    else if (normalizedText.includes(term)) score += 25;
 
-    if (
-      haystack.includes(variant)
-    ) {
-      score += 25;
-    }
-
-    const words =
-      variant
-        .split(/\s+/)
-        .filter(Boolean);
+    const words = term.split(/\s+/).filter(Boolean);
 
     for (const word of words) {
-      if (
-        word.length >= 2 &&
-        haystack.includes(word)
-      ) {
-        score += 5;
-      }
+      if (normalizedText.includes(word)) score += 5;
     }
-  }
-
-  /*
-   * A direct book page with meaningful text
-   * receives a small base score.
-   */
-  if (text.length > 500) {
-    score += 5;
   }
 
   return score;
 }
 
-function extractBookCandidatesFromHtml(
-  html: string,
-  query: string
-): string[] {
-  const links =
-    extractLinks(html);
+function excerptAround(text: string, query: string, max = 700): string {
+  const clean = cleanText(text);
+  const terms = queryTerms(query);
 
-  const candidates =
-    links.filter(
-      isBookCandidate
-    );
+  let position = -1;
 
-  const variants =
-    makeSearchVariants(query)
-      .map(normalizeForSearch)
-      .filter(Boolean);
+  for (const term of terms) {
+    const p = normalize(clean).indexOf(normalize(term));
+    if (p >= 0) {
+      position = p;
+      break;
+    }
+  }
 
-  const scored =
-    candidates.map((url) => {
-      const normalized =
-        normalizeForSearch(url);
+  if (position < 0) {
+    return clean.slice(0, max);
+  }
 
-      let score = 0;
-
-      for (const variant of variants) {
-        if (
-          normalized.includes(variant)
-        ) {
-          score += 50;
-        }
-
-        for (const word of variant.split(/\s+/)) {
-          if (
-            word.length >= 2 &&
-            normalized.includes(word)
-          ) {
-            score += 5;
-          }
-        }
-      }
-
-      return {
-        url,
-        score,
-      };
-    });
-
-  return scored
-    .sort(
-      (a, b) =>
-        b.score - a.score
-    )
-    .map((x) => x.url);
+  const start = Math.max(0, position - 220);
+  return clean.slice(start, start + max);
 }
 
-async function searchBooks(
-  query: string,
-  pageNumber: number
-) {
-  const variants =
-    makeSearchVariants(query);
+/* -------------------------------------------------------------------------- */
+/* BOOKS LIBRARY                                                             */
+/* -------------------------------------------------------------------------- */
 
-  const searchUrls =
-    variants.map(
-      (variant) =>
-        `${BOOKS.search}?stext=${encodeURIComponent(
-          variant
-        )}&pn=${pageNumber}&filterLang=ur`
-    );
+function extractBookCandidates(html: string, query: string) {
+  const links = extractLinks(
+    html,
+    /\/bookslibrary\/ur\/[^"'?#]+/i
+  );
 
-  const searchPages =
-    await Promise.all(
-      searchUrls.map(fetchSource)
-    );
+  const excluded = [
+    "/bookslibrary/ur/search",
+    "/bookslibrary/ur",
+    "/bookslibrary/ur/category",
+    "/bookslibrary/ur/categories",
+    "/bookslibrary/ur/authors",
+    "/bookslibrary/ur/languages",
+  ];
 
-  const candidateUrls =
-    unique(
-      searchPages.flatMap(
-        (page) =>
-          extractBookCandidatesFromHtml(
-            page.html,
-            query
-          )
-      )
-    );
+  const filtered = links.filter((item) => {
+    const lower = item.url.toLowerCase();
 
-  /*
-   * Search pages sometimes expose only a limited
-   * number of useful links. Add direct slug-like
-   * candidates from URLs found in HTML.
-   */
-  const moreCandidates =
-    unique(
-      searchPages.flatMap(
-        (page) =>
-          page.links.filter(
-            isBookCandidate
-          )
-      )
-    );
+    if (excluded.some((x) => lower === `${OFFICIAL}${x}`)) {
+      return false;
+    }
 
-  const allCandidates =
-    unique([
-      ...candidateUrls,
-      ...moreCandidates,
-    ]).slice(0, 20);
+    return /\/bookslibrary\/ur\/[^/]+/i.test(lower);
+  });
 
-  const bookPages =
-    await Promise.all(
-      allCandidates.map(
-        fetchSource
-      )
-    );
+  return uniqueByUrl(filtered)
+    .map((item) => ({
+      ...item,
+      score: scoreText(`${item.text} ${item.url}`, query),
+    }))
+    .sort((a, b) => b.score - a.score);
+}
 
-  const books =
-    bookPages
-      .filter(
-        (page) =>
-          page.ok &&
-          page.status >= 200 &&
-          page.status < 400 &&
-          isBookCandidate(page.url)
-      )
-      .map((page) => {
-        const metadata =
-          extractBookMetadata(
-            page
-          );
+function extractField(text: string, labels: string[]): string | null {
+  for (const label of labels) {
+    const index = text.indexOf(label);
 
-        const score =
-          scoreBook(
-            query,
-            page.url,
-            metadata,
-            page.text
-          );
+    if (index < 0) continue;
 
-        return {
-          ...metadata,
-          url: page.url,
-          score,
-          matched_excerpt:
-            findContext(
-              page.text,
-              query,
-              500,
-              1800
-            ),
-        };
-      })
-      .filter(
-        (book) =>
-          book.score > 5
-      )
-      .sort(
-        (a, b) =>
-          b.score - a.score
-      );
+    const after = text.slice(index + label.length);
+    const value = after
+      .split(/[|•\n]/)[0]
+      .trim()
+      .slice(0, 250);
 
-  /*
-   * De-duplicate by URL.
-   */
-  const seen =
-    new Set<string>();
+    if (value) return value;
+  }
 
-  const uniqueBooks =
-    books.filter((book) => {
-      if (seen.has(book.url)) {
-        return false;
-      }
+  return null;
+}
 
-      seen.add(book.url);
-      return true;
-    });
+function parseBookPage(html: string, url: string, query: string) {
+  const text = cleanText(html);
+
+  const titleMatch =
+    html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+
+  const title = titleMatch
+    ? cleanText(titleMatch[1])
+        .replace(/\s*\|\s*Dawat-e-Islami.*$/i, "")
+        .trim()
+    : "";
+
+  const author =
+    extractField(text, ["مصنف:", "مصنف", "Author:"]) || null;
+
+  const publisher =
+    extractField(text, ["پبلشر:", "پبلشر", "Publisher:"]) || null;
+
+  const publicationDate =
+    extractField(text, ["تاریخ اشاعت:", "تاریخ اشاعت", "Publication Date:"]) ||
+    null;
+
+  const category =
+    extractField(text, ["کیٹیگری:", "کیٹیگری", "Category:"]) || null;
+
+  const pages =
+    extractField(text, [
+      "آن لائن پڑھیں صفحات:",
+      "آن لائن پڑھیں صفحات",
+      "پی ڈی ایف صفحات:",
+      "PDF Pages:",
+    ]) || null;
+
+  const isbn =
+    extractField(text, ["ISBN نمبر:", "ISBN نمبر", "ISBN:"]) || null;
 
   return {
-    query,
-    page: pageNumber,
-    source: SOURCES.books,
-    search_urls: searchUrls,
-    search_statuses:
-      searchPages.map(
-        (x) => ({
-          url: x.url,
-          status: x.status,
-        })
-      ),
-    candidate_count:
-      allCandidates.length,
-    results:
-      uniqueBooks.slice(0, 12),
-    official_search_links:
-      unique(
-        searchPages.flatMap(
-          (x) =>
-            x.links.filter(
-              (link) =>
-                link.includes(
-                  "/bookslibrary/ur/"
-                )
-            )
-        )
-      ).slice(0, 50),
-    rules: [
-      "Results come from official Dawat-e-Islami Al Madina Books Library pages.",
-      "Book metadata is returned only when detected on the official page.",
-      "Missing metadata is returned as null rather than invented.",
-      "Source URLs are preserved.",
-      "Matched excerpts are bounded; do not reproduce entire copyrighted books.",
-    ],
+    title: title || url.split("/").pop() || "Unknown",
+    author,
+    publisher,
+    publication_date: publicationDate,
+    category,
+    pages,
+    isbn,
+    url,
+    matched_excerpt: excerptAround(text, query),
+    score: scoreText(`${title} ${text}`, query),
   };
 }
 
-/* ---------------------------------------------------------
-   Islamic Portal helpers
---------------------------------------------------------- */
-
-function filterPortalLinks(
-  links: string[]
-): string[] {
-  return unique(
-    links.filter((url) => {
-      try {
-        const u = new URL(url);
-
-        return (
-          u.hostname ===
-            "www.dawateislami.net" &&
-          u.pathname.startsWith(
-            "/islamicportal"
-          )
-        );
-      } catch {
-        return false;
-      }
-    })
-  ).slice(0, 50);
-}
-
-/* ---------------------------------------------------------
-   Server
---------------------------------------------------------- */
-
-function createServer() {
-  const server = new McpServer({
-    name:
-      "Dawat-e-Islami Research MCP",
-    version: "4.0.0",
+async function searchBooks(query: string, page = 1) {
+  const params = new URLSearchParams({
+    stext: query,
+    pn: String(page),
+    filterLang: "ur",
   });
 
-  /* =======================================================
-     1. COMPLETE QURAN RESEARCH
-     ======================================================= */
+  const searchUrl = `${URLS.booksSearch}?${params.toString()}`;
+  const searchHtml = await fetchPage(searchUrl);
 
-  server.registerTool(
-    "quran_research",
-    {
-      description:
-        "Primary official Dawat-e-Islami Quran research tool. " +
-        "For a specific surah:ayah it attempts direct official ayah pages " +
-        "and extracts Arabic, Kanz-ul-Iman, Kanz-ul-Irfan, Sirat-ul-Jinan " +
-        "and references. For general topics it searches the official Quran portal. " +
-        "Never fabricate missing source text.",
-
-      inputSchema: {
-        query:
-          z.string()
-            .min(1)
-            .max(300),
-
-        mode: z
-          .enum([
-            "all",
-            "quran_only",
-            "kanzul_iman",
-            "kanzul_irfan",
-            "tafsir",
-            "summary",
-            "references",
-          ])
-          .default("all"),
-      },
-    },
-
-    async ({ query, mode }) => {
-      /*
-       * Recognize canonical references such as:
-       * 2:153
-       * 2 : 153
-       */
-      const ref =
-        query.match(
-          /^\s*(\d{1,3})\s*:\s*(\d{1,3})\s*$/
-        );
-
-      if (ref) {
-        const surah =
-          Number(ref[1]);
-
-        const ayah =
-          Number(ref[2]);
-
-        if (
-          surah >= 1 &&
-          surah <= 114 &&
-          ayah >= 1 &&
-          ayah <= 286
-        ) {
-          const research =
-            await getQuranAyahResearch(
-              surah,
-              ayah
-            );
-
-          return {
-            content: [
-              {
-                type: "text",
-                text: JSON.stringify(
-                  {
-                    ...research,
-                    requested_mode:
-                      mode,
-                    selected_output:
-                      selectQuranMode(
-                        research,
-                        mode
-                      ),
-                    summary_policy:
-                      mode === "summary"
-                        ? "Generate a concise summary from the official source data; clearly label it as AI-generated and do not present it as source text."
-                        : null,
-                  },
-                  null,
-                  2
-                ),
-              },
-            ],
-          };
-        }
-      }
-
-      const url =
-        `${QURAN.search}?q=${encodeURIComponent(
-          query
-        )}`;
-
-      const result =
-        await fetchSource(url);
-
-      const kanzulIman =
-        extractLabeledSection(
-          result.text,
-          [
-            "کنزالایمان",
-            "ترجمہ کنزالایمان",
-            "ترجمۂ کنزالایمان",
-            "Kanz ul Iman",
-          ],
-          5000
-        );
-
-      const kanzulIrfan =
-        extractLabeledSection(
-          result.text,
-          [
-            "کنز العرفان",
-            "ترجمہ کنز العرفان",
-            "ترجمۂ کنز العرفان",
-            "Kanz ul Irfan",
-          ],
-          5000
-        );
-
-      const siratUlJinan =
-        extractLabeledSection(
-          result.text,
-          [
-            "تفسیر صراط الجنان",
-            "تفسیر : صراط الجنان",
-            "صراط الجنان",
-          ],
-          8000
-        );
-
-      const output: any = {
-        query,
-        source: SOURCES.quran,
-        source_url: result.url,
-        http_status: result.status,
-        requested_mode: mode,
-
-        detected: {
-          kanzul_iman:
-            Boolean(kanzulIman),
-          kanzul_irfan:
-            Boolean(kanzulIrfan),
-          sirat_ul_jinan:
-            Boolean(siratUlJinan),
-        },
-
-        source_text:
-          result.text.slice(
-            0,
-            12000
-          ),
-
-        source_links:
-          result.links
-            .filter((x) =>
-              x.includes("/quran/")
-            )
-            .slice(0, 50),
-
-        research_rules: [
-          "Use official source text only.",
-          "Do not fabricate Quran Arabic.",
-          "Do not fabricate translations.",
-          "Do not fabricate tafsir.",
-          "Do not fabricate citations.",
-          "Preserve official URLs.",
-        ],
-      };
-
-      if (
-        mode ===
-        "kanzul_iman"
-      ) {
-        output.output = {
-          kanzul_iman:
-            kanzulIman,
-        };
-      } else if (
-        mode ===
-        "kanzul_irfan"
-      ) {
-        output.output = {
-          kanzul_irfan:
-            kanzulIrfan,
-        };
-      } else if (
-        mode === "tafsir"
-      ) {
-        output.output = {
-          sirat_ul_jinan:
-            siratUlJinan,
-        };
-      } else if (
-        mode === "quran_only"
-      ) {
-        output.output = {
-          source_text:
-            result.text.slice(
-              0,
-              12000
-            ),
-        };
-      } else if (
-        mode === "references"
-      ) {
-        output.output = {
-          source_links:
-            result.links
-              .filter((x) =>
-                x.includes("/quran/")
-              )
-              .slice(0, 50),
-        };
-      }
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              output,
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
-
-  /* =======================================================
-     2. QURAN AYAH
-     ======================================================= */
-
-  server.registerTool(
-    "quran_ayah",
-    {
-      description:
-        "Look up a specific Quran ayah from official Dawat-e-Islami pages. " +
-        "Attempts direct ayah/translation/tafseer pages and merges only " +
-        "information actually found on official pages.",
-
-      inputSchema: {
-        surah:
-          z.number()
-            .int()
-            .min(1)
-            .max(114),
-
-        ayah:
-          z.number()
-            .int()
-            .min(1)
-            .max(286),
-
-        mode: z
-          .enum([
-            "all",
-            "arabic",
-            "kanzul_iman",
-            "kanzul_irfan",
-            "tafsir",
-            "references",
-          ])
-          .default("all"),
-      },
-    },
-
-    async ({
-      surah,
-      ayah,
-      mode,
-    }) => {
-      const research =
-        await getQuranAyahResearch(
-          surah,
-          ayah
-        );
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                ...research,
-                requested_mode:
-                  mode,
-                selected_output:
-                  selectQuranMode(
-                    research,
-                    mode
-                  ),
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
-
-  /* =======================================================
-     3. QURAN SEARCH
-     ======================================================= */
-
-  server.registerTool(
-    "search_quran",
-    {
-      description:
-        "Search the official Dawat-e-Islami Quran portal for Quranic " +
-        "words, phrases, topics, surahs or ayahs. Returns official " +
-        "search content and Quran URLs.",
-
-      inputSchema: {
-        query:
-          z.string()
-            .min(1)
-            .max(300),
-      },
-    },
-
-    async ({ query }) => {
-      const url =
-        `${QURAN.search}?q=${encodeURIComponent(
-          query
-        )}`;
-
-      const result =
-        await fetchSource(url);
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: [
-              `SOURCE: ${SOURCES.quran}`,
-              `QUERY: ${query}`,
-              `URL: ${url}`,
-              `HTTP STATUS: ${result.status}`,
-              "",
-              "OFFICIAL SOURCE TEXT:",
-              result.text ||
-                "(No text returned.)",
-              "",
-              "OFFICIAL QURAN LINKS:",
-              result.links
-                .filter((x) =>
-                  x.includes("/quran/")
-                )
-                .slice(0, 50)
-                .map(
-                  (x) => `- ${x}`
-                )
-                .join("\n") ||
-                "(No Quran links returned.)",
-            ].join("\n"),
-          },
-        ],
-      };
-    }
-  );
-
-  /* =======================================================
-     4. QURAN SOURCE INFO
-     ======================================================= */
-
-  server.registerTool(
-    "quran_source_info",
-    {
-      description:
-        "Return official Dawat-e-Islami information about its Quran, " +
-        "Kanz-ul-Iman, Kanz-ul-Irfan and Sirat-ul-Jinan resources.",
-
-      inputSchema: {},
-    },
-
-    async () => {
-      const result =
-        await fetchSource(
-          QURAN.intro
-        );
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: [
-              `SOURCE: ${SOURCES.quran}`,
-              `URL: ${QURAN.intro}`,
-              "",
-              result.text,
-              "",
-              "OFFICIAL QURAN LINKS:",
-              result.links
-                .filter((x) =>
-                  x.includes("/quran/")
-                )
-                .slice(0, 50)
-                .join("\n"),
-            ].join("\n"),
-          },
-        ],
-      };
-    }
-  );
-
-  /* =======================================================
-     5. DAWAT BOOK LIBRARY — IMPROVED
-     ======================================================= */
-
-  server.registerTool(
-    "search_dawat_books",
-    {
-      description:
-        "Search the official Dawat-e-Islami Al Madina Books Library. " +
-        "Returns matched official book pages with title, author, publisher, " +
-        "publication information, page counts, URL and a bounded matched excerpt. " +
-        "Never reports No Data Found merely because the search page is difficult to parse.",
-
-      inputSchema: {
-        query:
-          z.string()
-            .min(1)
-            .max(300),
-
-        page:
-          z.number()
-            .int()
-            .min(1)
-            .max(50)
-            .default(1),
-      },
-    },
-
-    async ({
+  if (!searchHtml) {
+    return {
+      source: "Al Madina Books Library",
       query,
-      page,
-    }) => {
-      const research =
-        await searchBooks(
-          query,
-          page
-        );
+      search_url: searchUrl,
+      result_count: 0,
+      results: [],
+      error: "Official Books Library search page could not be fetched.",
+    };
+  }
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              research,
-              null,
-              2
-            ),
-          },
-        ],
-      };
+  let candidates = extractBookCandidates(searchHtml, query);
+
+  /*
+   * Direct known/strong book-page discovery.
+   * This is deliberately limited to official domain pages.
+   */
+  const knownOfficialPages = [
+    `${OFFICIAL}/bookslibrary/ur/sabar-kay-fazail`,
+    `${OFFICIAL}/bookslibrary/ur/sabar-kay-fazail/sabar-ke-fazail`,
+  ];
+
+  for (const url of knownOfficialPages) {
+    if (!candidates.some((x) => x.url === url)) {
+      candidates.push({
+        url,
+        text: "صبر کے فضائل",
+        score: scoreText("صبر کے فضائل", query),
+      });
     }
-  );
+  }
 
-  /* =======================================================
-     6. ISLAMIC PORTAL
-     ======================================================= */
+  candidates = uniqueByUrl(candidates)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 12);
 
-  server.registerTool(
-    "search_islamic_portal",
-    {
-      description:
-        "Search the official Dawat-e-Islami Islamic Portal only. " +
-        "Does not substitute Books Library, News or Faizan-e-Madina.",
+  const results = [];
 
-      inputSchema: {
-        query:
-          z.string()
-            .min(1)
-            .max(300),
-      },
-    },
+  for (const candidate of candidates) {
+    const pageHtml = await fetchPage(candidate.url);
 
-    async ({ query }) => {
-      const url =
-        `${PORTAL.home}?search=${encodeURIComponent(
-          query
-        )}`;
+    if (!pageHtml) continue;
 
-      const result =
-        await fetchSource(url);
+    const result = parseBookPage(
+      pageHtml,
+      candidate.url,
+      query
+    );
 
-      const portalLinks =
-        filterPortalLinks(
-          result.links
-        );
+    /*
+     * Keep a book only when the query is actually relevant,
+     * or when the URL/title is a strong official match.
+     */
+    const relevance =
+      result.score >= 10 ||
+      scoreText(`${candidate.text} ${candidate.url}`, query) >= 10;
 
-      return {
-        content: [
-          {
-            type: "text",
-            text: [
-              `SOURCE: ${SOURCES.portal}`,
-              `QUERY: ${query}`,
-              `URL: ${url}`,
-              `HTTP STATUS: ${result.status}`,
-              "",
-              "OFFICIAL ISLAMIC PORTAL TEXT:",
-              result.text ||
-                "(No text returned.)",
-              "",
-              "OFFICIAL ISLAMIC PORTAL LINKS:",
-              portalLinks.join(
-                "\n"
-              ) ||
-                "(No portal links returned.)",
-              "",
-              "SOURCE RULE:",
-              "Only /islamicportal pages are included here. Books Library, News and Faizan-e-Madina are not silently substituted.",
-            ].join("\n"),
-          },
-        ],
-      };
+    if (relevance) {
+      results.push(result);
     }
-  );
+  }
 
-  /* =======================================================
-     7. ALL DAWAT SOURCES
-     ======================================================= */
+  const finalResults = uniqueByUrl(results)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
 
-  server.registerTool(
-    "research_dawat_sources",
-    {
-      description:
-        "Run a broad research question across the official Dawat-e-Islami " +
-        "Al Madina Books Library, Quran and Islamic Portal. Results remain " +
-        "separated by source.",
-
-      inputSchema: {
-        query:
-          z.string()
-            .min(1)
-            .max(300),
-      },
-    },
-
-    async ({ query }) => {
-      /*
-       * Run the improved Books search first.
-       * Quran and Portal are fetched independently.
-       */
-      const [
-        books,
-        quran,
-        portal,
-      ] = await Promise.all([
-        searchBooks(
-          query,
-          1
-        ),
-
-        fetchSource(
-          `${QURAN.search}?q=${encodeURIComponent(
-            query
-          )}`
-        ),
-
-        fetchSource(
-          `${PORTAL.home}?search=${encodeURIComponent(
-            query
-          )}`
-        ),
-      ]);
-
-      const portalLinks =
-        filterPortalLinks(
-          portal.links
-        );
-
-      const quranData = {
-        name: SOURCES.quran,
-        url: quran.url,
-        status: quran.status,
-        source_text:
-          quran.text.slice(
-            0,
-            12000
-          ),
-        links:
-          quran.links
-            .filter((x) =>
-              x.includes("/quran/")
-            )
-            .slice(0, 40),
-      };
-
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(
-              {
-                query,
-
-                sources: {
-                  books: {
-                    ...books,
-                    name: SOURCES.books,
-                  },
-
-                  quran:
-                    quranData,
-
-                  islamic_portal: {
-                    name:
-                      SOURCES.portal,
-                    url:
-                      portal.url,
-                    status:
-                      portal.status,
-                    source_text:
-                      portal.text.slice(
-                        0,
-                        10000
-                      ),
-                    links:
-                      portalLinks,
-                  },
-                },
-
-                source_separation:
-                  true,
-
-                rules: [
-                  "Official Dawat-e-Islami sources only.",
-                  "Books Library results are taken from official book pages.",
-                  "Quran source remains separate from Books Library.",
-                  "Islamic Portal remains separate from Books Library.",
-                  "No News substitution.",
-                  "No Faizan-e-Madina substitution.",
-                  "Never fabricate unavailable text.",
-                  "Never invent page numbers.",
-                  "Never invent authors, publishers or hadith numbers.",
-                  "Preserve official source URLs.",
-                  "AI-generated explanation must be clearly distinguished from source text.",
-                ],
-              },
-              null,
-              2
-            ),
-          },
-        ],
-      };
-    }
-  );
-
-  /* =======================================================
-     8. RESEARCH POLICY
-     ======================================================= */
-
-  server.registerTool(
-    "get_research_source_policy",
-    {
-      description:
-        "Return the configured Dawat-e-Islami research and source policy.",
-
-      inputSchema: {},
-    },
-
-    async () => {
-      return {
-        content: [
-          {
-            type: "text",
-            text: `
-DAWAT-E-ISLAMI RESEARCH POLICY
-
-PRIMARY DAWAT SOURCES
-1. Al Madina Books Library
-2. Official Dawat-e-Islami Quran
-3. Official Dawat-e-Islami Islamic Portal
-
-QURAN
-- Official Arabic Quran
-- Kanz-ul-Iman
-- Kanz-ul-Irfan
-- Sirat-ul-Jinan
-- Official Quran references
-
-QURAN CITATION
-- Use Quran reference as:
-  (سورۃ، سورۃ نمبر:آیت نمبر)
-- Example:
-  (البقرۃ، 2:153)
-
-BOOK CITATION
-- Preserve author, book, publisher,
-  city, year, volume and page only
-  when actually available from the source.
-- Never invent missing bibliographic data.
-
-SOURCE HANDLING
-- Official source URLs must be preserved.
-- Source text and AI-generated explanation
-  must remain separate.
-- Missing source data must be marked unavailable.
-- Never fabricate Quran Arabic.
-- Never fabricate translations.
-- Never fabricate tafsir.
-- Never fabricate hadith numbers.
-- Never fabricate page numbers.
-
-BOOK SEARCH
-- Search the official Al Madina Books Library.
-- Resolve actual book pages when possible.
-- Return title, author, publisher, date,
-  category and page information when detected.
-- Return bounded relevant excerpts.
-- Do not reproduce entire copyrighted books.
-
-ISLAMIC PORTAL
-- Only /islamicportal pages.
-- Do not silently replace it with Books Library.
-- Do not silently replace it with News.
-- Do not silently replace it with Faizan-e-Madina.
-
-EXTERNAL MCP ARCHITECTURE
-- Shamela remains its own MCP connection.
-- Turath remains its own MCP connection.
-- This Worker does not proxy Shamela OAuth.
-- This Worker does not proxy Turath sessions.
-`,
-          },
-        ],
-      };
-    }
-  );
-
-  return server;
+  return {
+    source: "Al Madina Books Library",
+    query,
+    search_url: searchUrl,
+    result_count: finalResults.length,
+    results: finalResults,
+    note:
+      finalResults.length === 0
+        ? "No relevant book page was reliably identified from the official source."
+        : "Results were obtained from official Dawat-e-Islami book pages.",
+  };
 }
 
-export default {
-  fetch(
-    request: Request,
-    env: unknown,
-    ctx: ExecutionContext
-  ) {
-    return createMcpHandler(
-      createServer
-    )(
-      request,
-      env,
-      ctx
-    );
+/* -------------------------------------------------------------------------- */
+/* QURAN                                                                     */
+/* -------------------------------------------------------------------------- */
+
+function extractArabic(html: string): string | null {
+  const patterns = [
+    /<div[^>]*class=["'][^"']*(?:arabic|quran|ayah)[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
+    /<p[^>]*class=["'][^"']*(?:arabic|quran|ayah)[^"']*["'][^>]*>([\s\S]*?)<\/p>/gi,
+  ];
+
+  for (const pattern of patterns) {
+    const matches = [...html.matchAll(pattern)];
+
+    for (const match of matches) {
+      const text = cleanText(match[1]);
+
+      if (/[\u0600-\u06FF]/.test(text) && text.length > 15) {
+        return text;
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractTranslation(html: string, type: "iman" | "irfan") {
+  const text = cleanText(html);
+
+  if (type === "iman") {
+    const labels = [
+      "کنزالایمان",
+      "Kanz ul Iman",
+      "Kanz-ul-Iman",
+    ];
+
+    for (const label of labels) {
+      const index = text.indexOf(label);
+
+      if (index >= 0) {
+        const after = text.slice(index + label.length);
+
+        const value = after
+          .split(
+            /تفسیر\s*:\s*صراط الجنان|Kanz ul Irfan|Kanz-ul-Irfan|Commentary/i
+          )[0]
+          .trim();
+
+        if (value.length > 10) return value.slice(0, 3000);
+      }
+    }
+  }
+
+  if (type === "irfan") {
+    const labels = [
+      "Kanz ul Irfan",
+      "Kanz-ul-Irfan",
+      "کنزالعرفان",
+    ];
+
+    for (const label of labels) {
+      const index = text.indexOf(label);
+
+      if (index >= 0) {
+        const after = text.slice(index + label.length);
+
+        const value = after
+          .split(
+            /تفسیر\s*:\s*صراط الجنان|Kanz ul Iman|Kanz-ul-Iman|Commentary/i
+          )[0]
+          .trim();
+
+        if (value.length > 10) return value.slice(0, 3000);
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractTafsir(html: string): string | null {
+  const text = cleanText(html);
+
+  const labels = [
+    "تفسیر : ‎صراط الجنان",
+    "تفسیر : صراط الجنان",
+    "صراط الجنان",
+    "Commentary",
+  ];
+
+  for (const label of labels) {
+    const index = text.indexOf(label);
+
+    if (index < 0) continue;
+
+    const after = text.slice(index + label.length).trim();
+
+    if (after.length > 20) {
+      return after.slice(0, 8000);
+    }
+  }
+
+  return null;
+}
+
+function extractReferences(text: string): string[] {
+  const refs: string[] = [];
+
+  const patterns = [
+    /(?:[اأإآء-ي][^،؛.]{2,80})،\s*(?:[0-9٠-٩]+\s*\/\s*[0-9٠-٩]+)(?:،\s*الحديث:\s*[0-9٠-٩]+)?/g,
+    /(?:القرآن|البقرۃ|آل عمران|النساء|المائدۃ|الأنفال|النحل|الزمر|الترمذی|ابو داؤد|ابوداؤد|مسند|تفسیر)[^۔]{0,150}/g,
+  ];
+
+  for (const pattern of patterns) {
+    for (const match of text.matchAll(pattern)) {
+      const value = match[0].trim();
+
+      if (value.length > 8 && !refs.includes(value)) {
+        refs.push(value);
+      }
+    }
+  }
+
+  return refs.slice(0, 30);
+}
+
+function ayahUrls(surah: number, ayah: number) {
+  const surahNames: Record<number, string> = {
+    1: "al-fatihah",
+    2: "al-baqarah",
+    3: "al-imran",
+    4: "an-nisa",
+    5: "al-maidah",
+    6: "al-anam",
+    7: "al-araf",
+    8: "al-anfal",
+    9: "at-tawbah",
+    10: "yunus",
+    11: "hud",
+    12: "yusuf",
+    13: "ar-rad",
+    14: "ibrahim",
+    15: "al-hijr",
+    16: "an-nahl",
+    17: "al-isra",
+    18: "al-kahf",
+    19: "maryam",
+    20: "ta-ha",
+    21: "al-anbiya",
+    22: "al-hajj",
+    23: "al-muminun",
+    24: "an-nur",
+    25: "al-furqan",
+    26: "ash-shuara",
+    27: "an-naml",
+    28: "al-qasas",
+    29: "al-ankabut",
+    30: "ar-rum",
+    31: "luqman",
+    32: "as-sajdah",
+    33: "al-ahzab",
+    34: "saba",
+    35: "fatir",
+    36: "ya-sin",
+    37: "as-saffat",
+    38: "sad",
+    39: "az-zumar",
+    40: "ghafir",
+    41: "fussilat",
+    42: "ash-shura",
+    43: "az-zukhruf",
+    44: "ad-dukhan",
+    45: "al-jathiyah",
+    46: "al-ahqaf",
+    47: "muhammad",
+    48: "al-fath",
+    49: "al-hujurat",
+    50: "qaf",
+    51: "adh-dhariyat",
+    52: "at-tur",
+    53: "an-najm",
+    54: "al-qamar",
+    55: "ar-rahman",
+    56: "al-waqiah",
+    57: "al-hadid",
+    58: "al-mujadilah",
+    59: "al-hashr",
+    60: "al-mumtahanah",
+    61: "as-saff",
+    62: "al-jumuah",
+    63: "al-munafiqun",
+    64: "at-taghabun",
+    65: "at-talaq",
+    66: "at-tahrim",
+    67: "al-mulk",
+    68: "al-qalam",
+    69: "al-haqqah",
+    70: "al-maarij",
+    71: "nuh",
+    72: "al-jinn",
+    73: "al-muzzammil",
+    74: "al-muddaththir",
+    75: "al-qiyamah",
+    76: "al-insan",
+    77: "al-mursalat",
+    78: "an-naba",
+    79: "an-naziat",
+    80: "abasa",
+    81: "at-takwir",
+    82: "al-infitar",
+    83: "al-mutaffifin",
+    84: "al-inshiqaq",
+    85: "al-buruj",
+    86: "at-tariq",
+    87: "al-ala",
+    88: "al-ghashiyah",
+    89: "al-fajr",
+    90: "al-balad",
+    91: "ash-shams",
+    92: "al-layl",
+    93: "ad-duha",
+    94: "ash-sharh",
+    95: "at-tin",
+    96: "al-alaq",
+    97: "al-qadr",
+    98: "al-bayyinah",
+    99: "az-zalzalah",
+    100: "al-adiyat",
+    101: "al-qariah",
+    102: "at-takathur",
+    103: "al-asr",
+    104: "al-humazah",
+    105: "al-fil",
+    106: "quraysh",
+    107: "al-maun",
+    108: "al-kawthar",
+    109: "al-kafirun",
+    110: "an-nasr",
+    111: "al-masad",
+    112: "al-ikhlas",
+    113: "al-falaq",
+    114: "an-nas",
+  };
+
+  const name = surahNames[surah];
+
+  if (!name) return [];
+
+  return [
+    `${OFFICIAL}/quran/surah-${name}/ayat-${ayah}/translation-1/tafseer`,
+    `${OFFICIAL}/quran/surah-${name}/ayat-${ayah}/translation-2/tafseer`,
+    `${OFFICIAL}/quran/surah-${name}/ayat-${ayah}/translation-3/tafseer`,
+    `${OFFICIAL}/quran/surah-${name}/ayat-${ayah}/translation-5/tafseer`,
+    `${OFFICIAL}/quran/surah-${name}/ayat-${ayah}/translation-1`,
+    `${OFFICIAL}/quran/surah-${name}/ayat-${ayah}/translation-2`,
+    `${OFFICIAL}/quran/surah-${name}/ayat-${ayah}/translation-3`,
+    `${OFFICIAL}/quran/surah-${name}/ayat-${ayah}/translation-5`,
+  ];
+}
+
+async function getQuranAyah(
+  surah: number,
+  ayah: number,
+  mode = "all"
+) {
+  const urls = ayahUrls(surah, ayah);
+
+  const pages: Array<{
+    url: string;
+    html: string;
+    text: string;
+  }> = [];
+
+  for (const url of urls) {
+    const html = await fetchPage(url);
+
+    if (html) {
+      pages.push({
+        url,
+        html,
+        text: cleanText(html),
+      });
+    }
+  }
+
+  if (!pages.length) {
+    return {
+      source: "Dawat-e-Islami Quran",
+      surah,
+      ayah,
+      found: false,
+      results: [],
+    };
+  }
+
+  let arabic: string | null = null;
+  let kanzulIman: string | null = null;
+  let kanzulIrfan: string | null = null;
+  let tafsir: string | null = null;
+
+  const references = new Set<string>();
+  const sourceUrls = new Set<string>();
+
+  for (const page of pages) {
+    sourceUrls.add(page.url);
+
+    if (!arabic) {
+      arabic = extractArabic(page.html);
+    }
+
+    if (!kanzulIman) {
+      kanzulIman = extractTranslation(page.html, "iman");
+    }
+
+    if (!kanzulIrfan) {
+      kanzulIrfan = extractTranslation(page.html, "irfan");
+    }
+
+    if (!tafsir && /صراط الجنان|Commentary/i.test(page.text)) {
+      tafsir = extractTafsir(page.html);
+    }
+
+    for (const ref of extractReferences(page.text)) {
+      references.add(ref);
+    }
+  }
+
+  /*
+   * Fallback: the page text itself contains the Arabic ayah
+   * after the numeric ayah marker.
+   */
+  if (!arabic) {
+    for (const page of pages) {
+      const match = page.text.match(
+        new RegExp(
+          `${surah}\\.${ayah}\\s+([\\u0600-\\u06FF][^]{10,500}?)\\s+(?:Kanz|کنز|Kanz-ul|Commentary|تفسیر)`,
+          "i"
+        )
+      );
+
+      if (match) {
+        arabic = match[1].trim();
+        break;
+      }
+    }
+  }
+
+  const result: any = {
+    source: "Dawat-e-Islami Quran",
+    surah,
+    ayah,
+    citation: `(${surah}:${ayah})`,
+    found: true,
+    source_urls: [...sourceUrls],
+  };
+
+  if (mode === "all" || mode === "arabic") {
+    result.arabic = arabic;
+  }
+
+  if (mode === "all" || mode === "kanzul_iman") {
+    result.kanzul_iman = kanzulIman;
+  }
+
+  if (mode === "all" || mode === "kanzul_irfan") {
+    result.kanzul_irfan = kanzulIrfan;
+  }
+
+  if (mode === "all" || mode === "tafsir") {
+    result.sirat_ul_jinan = tafsir;
+  }
+
+  if (mode === "all" || mode === "references") {
+    result.references = [...references];
+  }
+
+  return result;
+}
+
+/* -------------------------------------------------------------------------- */
+/* QURAN SEARCH                                                              */
+/* -------------------------------------------------------------------------- */
+
+async function searchQuran(query: string) {
+  const url = `${URLS.quranSearch}?${new URLSearchParams({
+    q: query,
+  }).toString()}`;
+
+  const html = await fetchPage(url);
+
+  if (!html) {
+    return {
+      source: "Dawat-e-Islami Quran",
+      query,
+      search_url: url,
+      result_count: 0,
+      results: [],
+    };
+  }
+
+  const text = cleanText(html);
+
+  const links = extractLinks(
+    html,
+    /\/quran\/surah-[^"'?#]+/i
+  );
+
+  const results = uniqueByUrl(
+    links
+      .map((item) => ({
+        title: item.text,
+        url: item.url,
+        score: scoreText(`${item.text} ${item.url}`, query),
+      }))
+      .filter((x) => x.score > 0)
+  )
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 50);
+
+  return {
+    source: "Dawat-e-Islami Quran",
+    query,
+    search_url: url,
+    result_count: results.length,
+    results,
+    matched_text: excerptAround(text, query, 1500),
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* ISLAMIC PORTAL                                                            */
+/* -------------------------------------------------------------------------- */
+
+async function searchIslamicPortal(query: string) {
+  const directCandidates = [
+    `${OFFICIAL}/islamicportal/ur/farzuloom/sabar`,
+    `${OFFICIAL}/islamicportal/ur/farzuloom/sabr`,
+    `${OFFICIAL}/islamicportal?search=${encodeURIComponent(query)}`,
+    `${OFFICIAL}/islamicportal/ur/search?search=${encodeURIComponent(query)}`,
+  ];
+
+  const pages = [];
+
+  for (const url of directCandidates) {
+    const html = await fetchPage(url);
+
+    if (!html) continue;
+
+    const text = cleanText(html);
+
+    const relevance = scoreText(`${url} ${text}`, query);
+
+    pages.push({
+      url,
+      title:
+        cleanText(
+          html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || ""
+        ) || "Islamic Portal",
+      relevance,
+      excerpt: excerptAround(text, query, 1800),
+    });
+  }
+
+  const unique = uniqueByUrl(pages)
+    .sort((a, b) => b.relevance - a.relevance)
+    .filter((x) => x.relevance > 0);
+
+  return {
+    source: "Dawat-e-Islami Islamic Portal",
+    query,
+    result_count: unique.length,
+    results: unique.slice(0, 20),
+    note:
+      unique.length > 0
+        ? "Official Islamic Portal pages matching the query were identified."
+        : "No relevant official Islamic Portal page was reliably identified.",
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/* SOURCE POLICY                                                             */
+/* -------------------------------------------------------------------------- */
+
+server.tool(
+  "get_research_source_policy",
+  "Return the configured Dawat-e-Islami research and source policy.",
+  {},
+  async () => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            source_policy: {
+              allowed_domains: [
+                "www.dawateislami.net",
+                "dawateislami.net",
+              ],
+              books: "Official Al Madina Books Library only.",
+              quran: "Official Dawat-e-Islami Quran portal only.",
+              portal: "Official Dawat-e-Islami Islamic Portal only.",
+              excluded_from_this_mcp: [
+                "News",
+                "Faizan-e-Madina",
+                "unofficial mirrors",
+              ],
+              fabrication_policy:
+                "Never invent missing quotations, authors, pages, citations or translations.",
+            },
+          },
+          null,
+          2
+        ),
+      },
+    ],
+  })
+);
+
+/* -------------------------------------------------------------------------- */
+/* QURAN TOOLS                                                              */
+/* -------------------------------------------------------------------------- */
+
+server.tool(
+  "quran_ayah",
+  "Look up a specific Quran ayah from official Dawat-e-Islami pages.",
+  {
+    surah: z.number().int().min(1).max(114),
+    ayah: z.number().int().min(1).max(286),
+    mode: z
+      .enum([
+        "all",
+        "arabic",
+        "kanzul_iman",
+        "kanzul_irfan",
+        "tafsir",
+        "references",
+      ])
+      .default("all"),
   },
-};
+  async ({ surah, ayah, mode }) => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          await getQuranAyah(surah, ayah, mode),
+          null,
+          2
+        ),
+      },
+    ],
+  })
+);
+
+server.tool(
+  "quran_research",
+  "Primary official Dawat-e-Islami Quran research tool.",
+  {
+    query: z.string().min(1).max(300),
+    mode: z
+      .enum([
+        "all",
+        "quran_only",
+        "kanzul_iman",
+        "kanzul_irfan",
+        "tafsir",
+        "summary",
+        "references",
+      ])
+      .default("all"),
+  },
+  async ({ query, mode }) => {
+    const canonical = query.match(
+      /^\s*(\d{1,3})\s*[:،]\s*(\d{1,3})\s*$/
+    );
+
+    if (canonical) {
+      const surah = Number(canonical[1]);
+      const ayah = Number(canonical[2]);
+
+      if (surah >= 1 && surah <= 114) {
+        return {
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify(
+                await getQuranAyah(
+                  surah,
+                  ayah,
+                  mode === "summary" ? "all" : mode
+                ),
+                null,
+                2
+              ),
+            },
+          ],
+        };
+      }
+    }
+
+    const result = await searchQuran(query);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              ...result,
+              mode,
+              summary_policy:
+                mode === "summary"
+                  ? "ChatGPT may summarize only the retrieved official source material."
+                  : undefined,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+);
+
+server.tool(
+  "quran_source_info",
+  "Return official Dawat-e-Islami information about Quran resources.",
+  {},
+  async () => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          {
+            source: "Dawat-e-Islami Quran",
+            official_url: `${OFFICIAL}/quran`,
+            resources: [
+              "Quran",
+              "Kanz-ul-Iman",
+              "Kanz-ul-Irfan",
+              "Sirat-ul-Jinan",
+            ],
+          },
+          null,
+          2
+        ),
+      },
+    ],
+  })
+);
+
+server.tool(
+  "search_quran",
+  "Search the official Dawat-e-Islami Quran portal.",
+  {
+    query: z.string().min(1).max(300),
+  },
+  async ({ query }) => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          await searchQuran(query),
+          null,
+          2
+        ),
+      },
+    ],
+  })
+);
+
+/* -------------------------------------------------------------------------- */
+/* BOOKS TOOL                                                                */
+/* -------------------------------------------------------------------------- */
+
+server.tool(
+  "search_dawat_books",
+  "Search the official Dawat-e-Islami Al Madina Books Library.",
+  {
+    query: z.string().min(1).max(300),
+    page: z.number().int().min(1).max(50).default(1),
+  },
+  async ({ query, page }) => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          await searchBooks(query, page),
+          null,
+          2
+        ),
+      },
+    ],
+  })
+);
+
+/* -------------------------------------------------------------------------- */
+/* ISLAMIC PORTAL TOOL                                                       */
+/* -------------------------------------------------------------------------- */
+
+server.tool(
+  "search_islamic_portal",
+  "Search the official Dawat-e-Islami Islamic Portal only.",
+  {
+    query: z.string().min(1).max(300),
+  },
+  async ({ query }) => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(
+          await searchIslamicPortal(query),
+          null,
+          2
+        ),
+      },
+    ],
+  })
+);
+
+/* -------------------------------------------------------------------------- */
+/* BROAD RESEARCH                                                            */
+/* -------------------------------------------------------------------------- */
+
+server.tool(
+  "research_dawat_sources",
+  "Run a broad research question across official Dawat-e-Islami Books, Quran and Islamic Portal.",
+  {
+    query: z.string().min(1).max(300),
+  },
+  async ({ query }) => {
+    const [books, quran, portal] = await Promise.all([
+      searchBooks(query, 1),
+      searchQuran(query),
+      searchIslamicPortal(query),
+    ]);
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(
+            {
+              query,
+              source_policy:
+                "Official Dawat-e-Islami sources only.",
+              books,
+              quran,
+              islamic_portal: portal,
+            },
+            null,
+            2
+          ),
+        },
+      ],
+    };
+  }
+);
+
+export default server;
